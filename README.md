@@ -17,10 +17,24 @@ bash build_paddle.sh
 # Install
 bash install_paddle.sh
 ```
-## For incremental compilation（faster rebuilds after code changes）
+
+To enable CINN, set the CMake option **`WITH_CINN` to `ON`** (it is off by default), for example:
+
 ```bash
-# For incremental compilation (faster rebuilds after code changes, also installs whl)
+WITH_CINN=ON bash build_paddle.sh
+```
+
+## Incremental compilation (faster rebuilds after code changes)
+
+```bash
+# Incremental compilation (faster rebuilds after code changes, also installs whl)
 bash build_inc.sh
+```
+
+For incremental builds with CINN enabled, pass the same variable:
+
+```bash
+WITH_CINN=ON bash build_inc.sh
 ```
 
 ## Verification
