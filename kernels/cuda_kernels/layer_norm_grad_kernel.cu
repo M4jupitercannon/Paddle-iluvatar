@@ -28,7 +28,7 @@ void LayerNormGradKernel(const Context &dev_ctx,
                          const DenseTensor &mean,
                          const DenseTensor &variance,
                          const DenseTensor &out_grad,
-                         float epsilon,
+                         double epsilon,
                          int begin_norm_axis,
                          DenseTensor *x_grad,
                          DenseTensor *scale_grad,
@@ -92,7 +92,7 @@ void LayerNormGradKernel(const Context &dev_ctx,
         d_x_data,                                                           \
         d_scale_data,                                                       \
         d_bias_data,                                                        \
-        epsilon,                                                            \
+        (static_cast<float>(epsilon)),                                      \
         batch_size,                                                         \
         feature_size,                                                       \
         dev_ctx);                                                           \

@@ -492,7 +492,7 @@ void LayerNormKernel(const Context &dev_ctx,
                      const DenseTensor &x,
                      const paddle::optional<DenseTensor> &scale_opt,
                      const paddle::optional<DenseTensor> &bias_opt,
-                     float epsilon,
+                     double epsilon,
                      int begin_norm_axis,
                      DenseTensor *y,
                      DenseTensor *mean,
@@ -553,7 +553,7 @@ void LayerNormKernel(const Context &dev_ctx,
               y_data,                                                      \
               mean_data,                                                   \
               var_data,                                                    \
-              epsilon,                                                     \
+              (static_cast<float>(epsilon)),                               \
               feature_size));                                              \
       default:                                                             \
         PADDLE_THROW(common::errors::InvalidArgument(                      \
@@ -584,7 +584,7 @@ void LayerNormKernel(const Context &dev_ctx,
         <<<grid, THREADS_PER_CTA, 0, stream>>>(                              \
             batch_size,                                                      \
             feature_size,                                                    \
-            epsilon,                                                         \
+            (static_cast<float>(epsilon)),                                   \
             x_data,                                                          \
             static_cast<const ScaleT *>(void_scale_data),                    \
             static_cast<const ScaleT *>(void_bias_data),                     \
@@ -645,7 +645,7 @@ void LayerNormKernel(const Context &dev_ctx,
                                            void_bias_data,
                                            mean_data,
                                            var_data,
-                                           epsilon,
+                                           (static_cast<float>(epsilon)),
                                            batch_size,
                                            feature_size,
                                            valid_scale,
