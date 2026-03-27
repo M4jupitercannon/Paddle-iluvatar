@@ -1,25 +1,28 @@
-diff --git a/test/legacy_test/test_api_compatibility_part2.py b/test/legacy_test/test_api_compatibility_part2.py
-index 38d6368318..7a3a28d24d 100644
---- a/test/legacy_test/test_api_compatibility_part2.py
-+++ b/test/legacy_test/test_api_compatibility_part2.py
-@@ -1593,7 +1593,7 @@ class TestTrapezoidAPI(unittest.TestCase):
-         paddle.trapezoid(y, out=out4)
+From 4922e7c2e5ef34ac6d2064c85a6690fa0b954a74 Mon Sep 17 00:00:00 2001
+From: tianyuzhou668 <tianyu.zhou@iluvatar.com>
+Date: Fri, 27 Mar 2026 14:43:02 +0800
+Subject: [PATCH] Update test patch
+
+---
+ test/legacy_test/test_api_compatibility_part3.py | 4 ++--
+ test/legacy_test/test_randint_op.py              | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/test/legacy_test/test_api_compatibility_part3.py b/test/legacy_test/test_api_compatibility_part3.py
+index 0d9ad7b79c..e448ca1549 100644
+--- a/test/legacy_test/test_api_compatibility_part3.py
++++ b/test/legacy_test/test_api_compatibility_part3.py
+@@ -305,8 +305,8 @@ class TestLdexpAPI(unittest.TestCase):
+ # Test inner compatibility
+ class TestInnerAPI(unittest.TestCase):
+     def setUp(self):
+-        self.np_x = np.array([1.0, 2.0, 3.0, 4.0])
+-        self.np_y = np.array([5.0, 6.0, 7.0, 8.0])
++        self.np_x = np.array([1.0, 2.0, 3.0, 4.0]).astype('float32')
++        self.np_y = np.array([5.0, 6.0, 7.0, 8.0]).astype('float32')
  
-         # Verify outputs
--        ref_out = np.trapezoid(self.np_y)
-+        ref_out = np.trapz(self.np_y)
-         for out in [out1, out2, out3, out4]:
-             np.testing.assert_allclose(out.numpy(), ref_out, rtol=1e-5)
- 
-@@ -1620,7 +1620,7 @@ class TestTrapezoidAPI(unittest.TestCase):
-                 fetch_list=[out1, out2, out3],
-             )
- 
--            ref_out = np.trapezoid(self.np_y)
-+            ref_out = np.trapz(self.np_y)
-             for actual in fetches:
-                 np.testing.assert_allclose(actual, ref_out, rtol=1e-5)
- 
+     def test_dygraph_Compatibility(self):
+         paddle.disable_static()
 diff --git a/test/legacy_test/test_randint_op.py b/test/legacy_test/test_randint_op.py
 index 7fb866b75d..7bd6b809f2 100644
 --- a/test/legacy_test/test_randint_op.py
@@ -33,3 +36,5 @@ index 7fb866b75d..7bd6b809f2 100644
              return
  
          print("Test Fixed Random number on GPU------>")
+-- 
+2.25.1
