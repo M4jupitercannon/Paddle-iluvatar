@@ -37,8 +37,8 @@ namespace iluvatar {
 // ============================================================
 static const char* kIxucaRuntimeSource = R"IXUCA_SOURCE(
 #pragma once
-#include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <limits>
