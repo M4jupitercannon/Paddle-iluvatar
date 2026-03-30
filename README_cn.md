@@ -18,10 +18,22 @@ bash build_paddle.sh
 bash install_paddle.sh
 ```
 
+若需开启 CINN，请将 CMake 选项 **`WITH_CINN` 设为 `ON`**（默认为关闭），例如：
+
+```bash
+WITH_CINN=ON bash build_paddle.sh
+```
+
 ## 增量编译（代码修改后更快地重新编译）
 ```bash
 # 增量编译（代码修改后更快地重新编译，也会安装 whl 包）
 bash build_inc.sh
+```
+
+增量编译若也要启用 CINN，同样传入环境变量：
+
+```bash
+WITH_CINN=ON bash build_inc.sh
 ```
 
 ## 验证
