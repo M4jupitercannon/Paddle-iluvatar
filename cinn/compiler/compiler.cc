@@ -33,7 +33,7 @@ namespace custom_device {
 namespace iluvatar {
 
 // ============================================================
-// 1. Runtime Source (JIT 源码头文件 - Device 端代码)
+// 1. Runtime Source (JIT Source Header - Device-side Code)
 // ============================================================
 static const char* kIxucaRuntimeSource = R"IXUCA_SOURCE(
 #pragma once
@@ -55,7 +55,7 @@ typedef int int32_t;
 typedef long long int64_t;
 #endif
 
-// 兼容 CINN 生成代码中对 __half 的引用
+// Compatible with __half references in CINN-generated code
 typedef __half float16;
 
 typedef __nv_bfloat16 bfloat16;
@@ -219,7 +219,6 @@ __device__ inline int64_t FN_INT64(abs)(int64_t x) { return llabs(x); }
 __device__ inline int64_t FN_INT64(logical_right_shift)(int64_t a, int64_t b) { return ((uint64_t)a >> b); }
 __device__ inline int64_t FN_INT64(trunc)(int64_t a) { return a; }
 __device__ inline int64_t FN_INT64(mod)(int64_t a, int64_t b) { int64_t res = a % b; if ((res != 0) && ((b ^ res) < 0)) res += b; return res; }
-// __device__ inline int64_t FN_INT64(pow)(int64_t a, int64_t b) { double res = pow(__ll2double_rd(a), __ll2double_rd(b)); return __double2ll_rn(res); }
 
 // ===============================================================
 // Float16 (Half) Functions
@@ -268,9 +267,8 @@ __device__ inline float16 FN_FP16(max)(float16 a, float16 b) { return __hgt(a, b
 __device__ inline float16 FN_FP16(min)(float16 a, float16 b) { return __hlt(a, b) ? a : b; }
 
 // ===============================================================
-// Warp Shuffle Functions (用于 Reduce 算子)
+// Warp Shuffle Functions (used by reduce operators)
 // ===============================================================
-// cinn_custom_device_warp_shuffle_xor_fp32
 #define FN_SHUFFLE(func) cinn_custom_device_##func
 __device__ inline float FN_SHUFFLE(warp_shuffle_xor_fp32)(float v, int factor) {
   return __shfl_xor(v, factor);
@@ -292,8 +290,7 @@ __device__ inline int FN_SHUFFLE(warp_shuffle_down_int32)(int v, int factor) {
   return __shfl_down(v, factor);
 }
 
-// MACA/CUDA 的 shfl 指令通常只支持 32位，__half 需要强转或使用 intrinsics
-// cinn_custom_device_warp_shuffle_xor_fp16
+// IXUCA/CUDA shfl intrinsics only support 32-bit natively; __half requires bitcast or intrinsics
 __device__ inline __half FN_SHUFFLE(warp_shuffle_xor_fp16)(__half v, int factor) {
   unsigned short val = __half_as_ushort(v);
   unsigned short res = (unsigned short)__shfl_xor((int)val, factor);
@@ -358,7 +355,6 @@ __device__ inline __half FN_SHUFFLE(warp_shuffle_down_fp16)(__half v, int factor
       welford_##TYPE_SUFFIX, DTYPE, __shfl_xor_sync, int, laneMask)
 
 EXPAND_WELFORD_MACRO(fp32, float)
-// EXPAND_WELFORD_MACRO(fp64, double)
 
 #undef WELFORD_STRUCT_MACRO
 #undef WELFORD_COMBINE_MACRO
@@ -408,7 +404,7 @@ __device__ inline bool cinn_all(const bool left, const bool right) { return left
 __device__ inline bool cinn_any(const bool left, const bool right) { return left || right; }
 
 // --- FP16 (Half) ---
-// 注意：必须使用 __hadd 等 intrinsics，不能直接用 +
+// Note: must use __hadd and similar intrinsics; direct + operator is not supported
 __device__ inline float16 cinn_sum_fp16(const float16 left, const float16 right) { return __hadd(left, right); }
 __device__ inline float16 cinn_prod_fp16(const float16 left, const float16 right) { return __hmul(left, right); }
 __device__ inline float16 cinn_max_fp16(const float16 left, const float16 right) { return __hgt(left, right) ? left : right; }
@@ -446,7 +442,7 @@ __device__ inline float16 cinn_min_fp16(const float16 left, const float16 right)
   MACRO(all, true, bool, ##__VA_ARGS__)         \
   MACRO(any, false, bool, ##__VA_ARGS__)
 
-// FP16 初始值 (使用 hex 转换)
+// FP16 initial values (using hex conversion)
 #define EXPAND_REDUCE_FP16_MACRO(MACRO, ...)              \
   MACRO(sum_fp16, 0.0, float16, ##__VA_ARGS__)            \
   MACRO(prod_fp16, 1.0, float16, ##__VA_ARGS__)           \
@@ -458,30 +454,20 @@ __device__ inline float16 cinn_min_fp16(const float16 left, const float16 right)
 // 4. Warp Shuffle Wrappers (Using Legacy API & Full Down Strategy)
 // ===============================================================
 
-// 【核心修复】Warp Reduce 逻辑重写
-// 1. 弃用 XOR 模式：因为在 64-thread warp 下，跨 32 边界的 XOR 可能存在未定义行为或硬件 bug。
-// 2. 统一使用 DOWN 模式：__shfl_down 是单向规约，Lane 0 总是能收集到数据的，更加稳健。
-// 3. 严格的边界检查：确保 fetch 的来源线程在 Block 范围内，否则使用 INIT_VAL 填充。
-
 #define CINN_WARP_SHUFFLE_INTERNAL_IMPL(REDUCE_TYPE, INIT_VAL, DTYPE)         \
   __device__ inline DTYPE cinn_warp_shuffle_##REDUCE_TYPE##_internal(         \
       const DTYPE value) {                                                    \
     DTYPE tmp_val = value;                                                    \
     unsigned int thread_id = threadIdx.x;                                     \
-    unsigned int lane_id = thread_id % WARP_SIZE; /* 获取在当前 Warp 内的局部 ID */ \
+    unsigned int lane_id = thread_id % WARP_SIZE; /* Get local lane ID within current warp */ \
     unsigned int block_dim = blockDim.x;                                      \
-    /* 始终使用 Down Shuffle 进行规约 (Log2 复杂度) */                          \
+    /* Always use down-shuffle for reduction (O(log N) complexity) */                          \
     for (unsigned int offset = WARP_SIZE / 2; offset >= 1; offset /= 2) {     \
         DTYPE shfl_res = cinn_warp_shuffle_down_##DTYPE##_wrapper(tmp_val, offset); \
-        /* 检查数据来源是否有效：当前线程+offset 必须还在 Block 范围内 */             \
-        /* 如果 Block 大小不是 WARP_SIZE 的倍数，这一步至关重要 */                  \
-        /* 【核心修复】不仅不能超出 block，且目标 Lane 也不能超出 WARP_SIZE */        \
         bool is_valid = (lane_id + offset < WARP_SIZE) && (thread_id + offset < block_dim); \
         DTYPE neighbor = is_valid ? shfl_res : (DTYPE)(INIT_VAL);             \
         tmp_val = cinn_##REDUCE_TYPE(tmp_val, neighbor);                      \
     }                                                                         \
-    /* 广播：虽然 Down Shuffle 只有 Lane 0 结果正确，但这里为了兼容 XOR 语义 */    \
-    /* 我们用 shfl 0 把 Lane 0 的结果广播给所有人 (CINN Block Reduce 需要) */     \
     return cinn_warp_shuffle_idx_##DTYPE##_wrapper(tmp_val, 0);              \
   }
 
@@ -509,7 +495,7 @@ __device__ inline welford_fp32 cinn_warp_shuffle_down_welford_fp32_wrapper(welfo
     return welford_fp32(m, m2, w);
 }
 
-// 广播类型的 Idx 包装函数 (最后返回阶段使用 shfl_sync(var, 0))
+// Broadcast-type idx wrapper functions (used in final return stage via shfl(var, 0))
 __device__ inline float cinn_warp_shuffle_idx_float_wrapper(float v, int lane) { return __shfl(v, lane); }
 __device__ inline int cinn_warp_shuffle_idx_int_wrapper(int v, int lane) { return __shfl(v, lane); }
 __device__ inline bool cinn_warp_shuffle_idx_bool_wrapper(bool v, int lane) { return __shfl(v, lane); }
@@ -525,7 +511,7 @@ __device__ inline int64_t cinn_warp_shuffle_idx_int64_t_wrapper(int64_t v, int l
   return ((int64_t)hi << 32) | (unsigned int)lo;
 }
 
-// === 新增：Welford 的 Idx (广播) 包装函数 ===
+// === Welford idx (broadcast) wrapper functions ===
 __device__ inline welford_fp32 cinn_warp_shuffle_idx_welford_fp32_wrapper(welford_fp32 v, int lane) {
     float m = __shfl(v.mean, lane);
     float m2 = __shfl(v.m2, lane);
@@ -545,42 +531,42 @@ EXPAND_REDUCE_FP16_MACRO(CINN_WARP_SHUFFLE_INTERNAL_IMPL)
 // ===============================================================
 
 #define CINN_BLOCK_REDUCE_IMPL(DTYPE, INIT_VAL, cinn_warp_shuffle_internal)       \
-  /* 1. 单个 Warp 内部规约 */                                                       \
+  /* 1. Intra-warp reduction */                                                       \
   DTYPE tmp_val = cinn_warp_shuffle_internal(value);                              \
   if (return_warp || blockDim.x <= WARP_SIZE) {                                   \
     return tmp_val;                                                               \
   }                                                                               \
   __syncthreads();                                                                \
   \
-  /* 【核心修复】：计算 2D/3D 线程块的专属共享显存偏移量 */                              \
-  /* row_id 代表当前线程属于哪一个独立的空间行 */                                       \
+  /* Compute per-row shared memory offset for 2D/3D thread blocks */                              \
+  /* row_id identifies which independent spatial row the current thread belongs to */                                       \
   int row_id = threadIdx.y + threadIdx.z * blockDim.y;                            \
   int warps_per_row = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;                   \
-  /* row_shm 是当前行专属的共享显存指针，彻底杜绝越行踩踏 */                             \
+  /* row_shm is the per-row shared memory pointer, preventing cross-row data corruption */                             \
   DTYPE* row_shm = shm + (row_id * warps_per_row);                                \
   \
-  /* 2. 每个 Warp 的 0 号线程把结果写入自己行的专属 SHM */                             \
+  /* 2. Lane 0 of each warp writes its result to its row's dedicated shared memory slot */                             \
   if (threadIdx.x % WARP_SIZE == 0) {                                             \
     row_shm[threadIdx.x / WARP_SIZE] = tmp_val;                                   \
   }                                                                               \
   __syncthreads();                                                                \
   \
-  /* 3. 跨 Warp 规约合并 (仅限每个行的前 WARP_SIZE 个线程执行) */                      \
+  /* 3. Cross-warp reduction (only the first WARP_SIZE threads per row participate) */                      \
   if (threadIdx.x < WARP_SIZE) {                                                  \
-    /* 闲置线程用初始值 (比如 0) 填充 */                                              \
+    /* Idle threads are filled with the identity value */                                              \
     DTYPE reduce_val = (DTYPE)(INIT_VAL);                                         \
     if (threadIdx.x < warps_per_row) {                                            \
       reduce_val = row_shm[threadIdx.x];                                          \
     }                                                                             \
-    /* 在 Warp 0 内部完成最终规约 */                                                 \
+    /* Perform final reduction within warp 0 */                                                 \
     reduce_val = cinn_warp_shuffle_internal(reduce_val);                          \
-    /* 写入最终结果到当前行的头部 */                                                  \
+    /* Write final result to the head of the current row */                                                  \
     if (threadIdx.x == 0) {                                                       \
       row_shm[0] = reduce_val;                                                    \
     }                                                                             \
   }                                                                               \
   __syncthreads();                                                                \
-  /* 4. 同一行的所有线程都返回正确的最终结果 */                                         \
+  /* 4. All threads in the same row return the correct final result */                                         \
   return row_shm[0];
 
 #define CINN_BLOCK_REDUCE_MACRO(REDUCE_TYPE, INIT_VAL, DTYPE)                  \
@@ -619,6 +605,85 @@ EXPAND_REDUCE_INT64_MACRO(CINN_DISCRETE_REDUCE_MACRO)
 EXPAND_REDUCE_FP32_MACRO(CINN_DISCRETE_REDUCE_MACRO)
 EXPAND_REDUCE_BOOL_MACRO(CINN_DISCRETE_REDUCE_MACRO)
 EXPAND_REDUCE_FP16_MACRO(CINN_DISCRETE_REDUCE_MACRO)
+
+// ===============================================================
+// ArgMin/ArgMax Support (ArgIdx Structures & Combine Functions)
+// Must be defined before discrete/block/grid reduce functions that use them
+// ===============================================================
+
+// arg reduce arg index struct
+// Do not define operator<; force dispatch through std::max overloads
+#define ARGIDX_STRUCT_MACRO(TYPENAME, DTYPE, ITYPE, IINIT)                    \
+  struct TYPENAME {                                                           \
+    DTYPE value;                                                              \
+    ITYPE index;                                                              \
+    __device__ TYPENAME() {}                                                  \
+    __device__ explicit TYPENAME(DTYPE value) : value(value), index(IINIT) {} \
+    __device__ TYPENAME(DTYPE value, ITYPE index)                             \
+        : value(value), index(index) {}                                       \
+    __device__ explicit operator ITYPE() { return index; }                    \
+    /* Assignment operator support */                                         \
+    __device__ inline TYPENAME& operator=(const TYPENAME& other) {            \
+        value = other.value;                                                  \
+        index = other.index;                                                  \
+        return *this;                                                         \
+    }                                                                         \
+    __device__ inline volatile TYPENAME& operator=(const volatile TYPENAME& other) volatile { \
+        value = other.value;                                                  \
+        index = other.index;                                                  \
+        return *this;                                                         \
+    }                                                                         \
+  };
+
+// Instantiate structs
+#ifdef CINN_CUDA_FP16
+ARGIDX_STRUCT_MACRO(argidx_fp16_i64, float16, int64_t, 0LL)
+#endif
+ARGIDX_STRUCT_MACRO(argidx_fp32_i64, float, int64_t, 0LL)
+ARGIDX_STRUCT_MACRO(argidx_i16_i64, int16_t, int64_t, 0LL)
+ARGIDX_STRUCT_MACRO(argidx_i32_i64, int, int64_t, 0LL)
+ARGIDX_STRUCT_MACRO(argidx_i64_i64, int64_t, int64_t, 0LL)
+ARGIDX_STRUCT_MACRO(argidx_u8_i64, uint8_t, int64_t, 0LL)
+
+ARGIDX_STRUCT_MACRO(argidx_fp32_i32, float, int, 0)
+ARGIDX_STRUCT_MACRO(argidx_i32_i32, int, int, 0)
+
+// cinn_max_argidx / cinn_min_argidx combine functions
+// These are called by CINN_DISCRETE_REDUCE_IMPL via cinn_##REDUCE_TYPE token pasting
+#define ARGIDX_COMBINE_MACRO(TYPENAME)                              \
+  __device__ TYPENAME cinn_min_##TYPENAME(TYPENAME a, TYPENAME b) { \
+    return a.value == b.value ? (a.index < b.index ? a : b)         \
+                              : (a.value < b.value ? a : b);        \
+  }                                                                 \
+  __device__ TYPENAME cinn_max_##TYPENAME(TYPENAME a, TYPENAME b) { \
+    return a.value == b.value ? (a.index < b.index ? a : b)         \
+                              : (a.value > b.value ? a : b);        \
+  }
+
+ARGIDX_COMBINE_MACRO(argidx_fp32_i32)
+ARGIDX_COMBINE_MACRO(argidx_fp32_i64)
+ARGIDX_COMBINE_MACRO(argidx_i32_i32)
+
+// Discrete reduce for argidx types
+__device__ inline argidx_fp32_i32 cinn_discrete_reduce_max_argidx_fp32_i32(
+    const argidx_fp32_i32 value, argidx_fp32_i32 *shm) {
+  CINN_DISCRETE_REDUCE_IMPL(max_argidx_fp32_i32, value);
+}
+
+__device__ inline argidx_fp32_i64 cinn_discrete_reduce_max_argidx_fp32_i64(
+    const argidx_fp32_i64 value, argidx_fp32_i64 *shm) {
+  CINN_DISCRETE_REDUCE_IMPL(max_argidx_fp32_i64, value);
+}
+
+__device__ inline argidx_fp32_i32 cinn_discrete_reduce_min_argidx_fp32_i32(
+    const argidx_fp32_i32 value, argidx_fp32_i32 *shm) {
+  CINN_DISCRETE_REDUCE_IMPL(min_argidx_fp32_i32, value);
+}
+
+__device__ inline argidx_fp32_i64 cinn_discrete_reduce_min_argidx_fp32_i64(
+    const argidx_fp32_i64 value, argidx_fp32_i64 *shm) {
+  CINN_DISCRETE_REDUCE_IMPL(min_argidx_fp32_i64, value);
+}
 
 #define CINN_GRID_REDUCE_IMPL(REDUCE_TYPE, init_value, DTYPE)               \
   DTYPE tmp_val = init_value;                                               \
@@ -878,67 +943,24 @@ __device__ int cinn_custom_device_resize_bicubic(const int *buf,
 } // extern "C"
 
 // ===============================================================
-// 8. ArgMin/ArgMax Support (ArgIdx Structures & Shuffles)
+// 8. ArgMin/ArgMax std::max/min Overloads & Block Reduce
 // ===============================================================
-// --- C++ Scope Start ---
 
-// arg reduce arg index struct
-// 【核心】不定义 operator<，强制走 std::max 重载
-#define ARGIDX_STRUCT_MACRO(TYPENAME, DTYPE, ITYPE, IINIT)                    \
-  struct TYPENAME {                                                           \
-    DTYPE value;                                                              \
-    ITYPE index;                                                              \
-    __device__ TYPENAME() {}                                                  \
-    __device__ explicit TYPENAME(DTYPE value) : value(value), index(IINIT) {} \
-    __device__ TYPENAME(DTYPE value, ITYPE index)                             \
-        : value(value), index(index) {}                                       \
-    __device__ explicit operator ITYPE() { return index; }                    \
-    /* 赋值运算符支持 */                                                      \
-    __device__ inline TYPENAME& operator=(const TYPENAME& other) {            \
-        value = other.value;                                                  \
-        index = other.index;                                                  \
-        return *this;                                                         \
-    }                                                                         \
-    __device__ inline volatile TYPENAME& operator=(const volatile TYPENAME& other) volatile { \
-        value = other.value;                                                  \
-        index = other.index;                                                  \
-        return *this;                                                         \
-    } \
-  };
-
-// 实例化结构体
-#ifdef CINN_CUDA_FP16
-ARGIDX_STRUCT_MACRO(argidx_fp16_i64, float16, int64_t, 0LL)
-#endif
-ARGIDX_STRUCT_MACRO(argidx_fp32_i64, float, int64_t, 0LL)
-ARGIDX_STRUCT_MACRO(argidx_i16_i64, int16_t, int64_t, 0LL)
-ARGIDX_STRUCT_MACRO(argidx_i32_i64, int, int64_t, 0LL)
-ARGIDX_STRUCT_MACRO(argidx_i64_i64, int64_t, int64_t, 0LL)
-ARGIDX_STRUCT_MACRO(argidx_u8_i64, uint8_t, int64_t, 0LL)
-
-ARGIDX_STRUCT_MACRO(argidx_fp32_i32, float, int, 0)
-ARGIDX_STRUCT_MACRO(argidx_i32_i32, int, int, 0)
-
-// 手写 std::max 重载
+// std::max overloads
 namespace std {
-  // --- 之前加的 long long / int64_t 补丁保持不变 ---
   __device__ __forceinline__ int64_t max(long long a, int64_t b) { return a > b ? a : b; }
   __device__ __forceinline__ int64_t max(int64_t a, long long b) { return a > b ? a : b; }
   __device__ __forceinline__ int64_t min(long long a, int64_t b) { return a < b ? a : b; }
   __device__ __forceinline__ int64_t min(int64_t a, long long b) { return a < b ? a : b; }
 
-  // // ==============================================================
-  // // 【新增防弹补丁】：解决 CINN 漏打 'f' 后缀导致的 float 和 double 混合报错
-  // // ==============================================================
 
-  // 以防万一，解决 CINN 把 0 打印成 int 与 float 混合的报错 (如 std::max(val, 0))
+  // As a safeguard, resolve ambiguity when CINN emits int literals mixed with float (e.g., std::max(val, 0))
   __device__ __forceinline__ float max(float a, int b) { return a > b ? a : (float)b; }
   __device__ __forceinline__ float max(int a, float b) { return a > b ? (float)a : b; }
   __device__ __forceinline__ float min(float a, int b) { return a < b ? a : (float)b; }
   __device__ __forceinline__ float min(int a, float b) { return a < b ? (float)a : b; }
-  // ==============================================================
 
-  // ArgMax 实现
+  // ArgMax implementation
   template <typename T>
   __device__ __forceinline__ T max_argidx_impl(const T& a, const T& b) {
     if (a.value > b.value) return a;
@@ -953,7 +975,7 @@ namespace std {
     return a.index < b.index ? a : b;
   }
 
-  // Volatile 重载
+  // Volatile overloads
   template <typename T>
   __device__ __forceinline__ T max_argidx_volatile_impl(const volatile T& a, const volatile T& b) {
     T va, vb;
@@ -970,7 +992,7 @@ namespace std {
     return min_argidx_impl(va, vb);
   }
 
-  // 显式展开
+  // Explicit instantiation
   __device__ __forceinline__ argidx_fp32_i64 max(const argidx_fp32_i64& a, const argidx_fp32_i64& b) { return max_argidx_impl(a, b); }
   __device__ __forceinline__ argidx_fp32_i64 min(const argidx_fp32_i64& a, const argidx_fp32_i64& b) { return min_argidx_impl(a, b); }
 
@@ -985,30 +1007,30 @@ namespace std {
 // 9. ArgMin/ArgMax Block Reduce Instantiation
 // ===============================================================
 
-// 【终极修正】支持 2D Block 的行级归约 (Row-wise Reduction)
+// Row-wise reduction supporting 2D thread blocks
 template <typename T, typename Func>
 __device__ inline T cinn_block_reduce_shm_impl(T value, T* shm_discard, Func reduce_func) {
-    // 获取 2D 维度信息
+    // Retrieve 2D block dimensions
     unsigned int tx = threadIdx.x;
     unsigned int ty = threadIdx.y;
     unsigned int bdx = blockDim.x;
 
-    // 计算扁平化索引：确保不同行的数据落在 Shared Memory 的不同区域
-    // 这样 threadIdx.y=0 和 threadIdx.y=1 就不会打架了
+    // Compute flattened index: ensure different rows map to distinct shared memory regions,
+    // so that threadIdx.y=0 and threadIdx.y=1 do not conflict
     unsigned int idx = ty * bdx + tx;
 
-    // 分配足够大的静态 Shared Memory (1024 够 32x32 的 block 使用)
-    // 如果你的 block 很大，需要增加这里。但 CINN argmax 通常 block 不大。
+    // Allocate sufficient static shared memory (1024 covers up to 32x32 thread blocks).
+    // Increase this if your block is larger, though CINN argmax blocks are typically small.
     __shared__ T internal_shm[1024];
 
-    // 1. 写入 (带边界检查)
+    // 1. Store values (with bounds check)
     if (idx < 1024) {
         internal_shm[idx] = value;
     }
     __syncthreads();
 
-    // 2. 树状归约 (只在 tx 维度归约)
-    // 每一行 (ty) 独立进行归约，互不干扰
+    // 2. Tree-based reduction (reduce along the tx dimension only)
+    // Each row (ty) reduces independently without interference
     for (unsigned int s = bdx / 2; s > 0; s >>= 1) {
         if (tx < s && (idx + s) < 1024) {
             internal_shm[idx] = reduce_func(internal_shm[idx], internal_shm[idx + s]);
@@ -1016,9 +1038,9 @@ __device__ inline T cinn_block_reduce_shm_impl(T value, T* shm_discard, Func red
         __syncthreads();
     }
 
-    // 3. 返回结果
-    // 每一行的结果存储在该行的首位 (ty * bdx)
-    // 广播给该行的所有线程
+    // 3. Return result
+    // Each row's result is stored at the head of that row (ty * bdx)
+    // Broadcast to all threads in the same row
     return internal_shm[ty * bdx];
 }
 
@@ -1054,14 +1076,32 @@ __device__ inline argidx_fp32_i64 cinn_block_reduce_min_argidx_fp32_i64(const ar
 __device__ inline argidx_fp32_i64 cinn_block_reduce_max_argidx_fp32_i64(const argidx_fp32_i64 value, argidx_fp32_i64 *shm, bool return_warp = false) {
     return cinn_block_reduce_max(value, shm, return_warp);
 }
+
+// i32 variants
+__device__ inline argidx_fp32_i32 cinn_block_reduce_max(const argidx_fp32_i32 value, argidx_fp32_i32 *shm, bool return_warp = false) {
+    return cinn_block_reduce_shm_impl(value, shm, ArgIdxMaxOp());
+}
+
+__device__ inline argidx_fp32_i32 cinn_block_reduce_min(const argidx_fp32_i32 value, argidx_fp32_i32 *shm, bool return_warp = false) {
+    return cinn_block_reduce_shm_impl(value, shm, ArgIdxMinOp());
+}
+
+__device__ inline argidx_fp32_i32 cinn_block_reduce_min_argidx_fp32_i32(const argidx_fp32_i32 value, argidx_fp32_i32 *shm, bool return_warp = false) {
+    return cinn_block_reduce_min(value, shm, return_warp);
+}
+
+__device__ inline argidx_fp32_i32 cinn_block_reduce_max_argidx_fp32_i32(const argidx_fp32_i32 value, argidx_fp32_i32 *shm, bool return_warp = false) {
+    return cinn_block_reduce_max(value, shm, return_warp);
+}
+
 } // extern "C"
 )IXUCA_SOURCE";
 
 // ============================================================
-// 2. 接口实现
+// 2. Interface Implementation
 // ============================================================
 
-// 全局原子计数器，确保文件名唯一
+// Global atomic counter to ensure unique filenames
 static std::atomic<uint64_t> g_compile_counter{0};
 
 const char* IluvatarGetRuntimeSource(void* dev_ptr) {
@@ -1126,8 +1166,16 @@ C_Status IluvatarCompile(void* dev_ptr,
          " " +
          obj_path + " -o " + cubin_path;
 
-  std::cout << "Command: " << cmd << std::endl;
-  int ret = std::system(cmd.c_str());
+  // Default: hide clang/lld warning spam. Set FLAGS_iluvatar_compile_verbose=1
+  // for full output.
+  const bool compile_verbose =
+      std::getenv("FLAGS_iluvatar_compile_verbose") != nullptr;
+  std::string run_cmd =
+      compile_verbose ? cmd : ("(" + cmd + ") >/dev/null 2>&1");
+  if (compile_verbose) {
+    std::cout << "Command: " << cmd << std::endl;
+  }
+  int ret = std::system(run_cmd.c_str());
 
   auto cleanup = [&](bool success) {
     if (!keep_tmp) {
@@ -1141,9 +1189,15 @@ C_Status IluvatarCompile(void* dev_ptr,
   };
 
   if (ret != 0) {
-    std::cerr << "[Iluvatar] JIT Compilation Failed! Code: " << ret
+    std::cerr << "[Iluvatar] JIT compilation failed, exit code: " << ret
               << std::endl;
-    std::cerr << "Command: " << cmd << std::endl;
+    if (!compile_verbose) {
+      std::cerr << "[Iluvatar] Hint: set FLAGS_iluvatar_compile_verbose=1 "
+                   "to print the command and compiler diagnostics."
+                << std::endl;
+    } else {
+      std::cerr << "Command: " << cmd << std::endl;
+    }
     cleanup(false);
     return C_Status::C_FAILED;
   }
