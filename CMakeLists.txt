@@ -914,7 +914,7 @@ target_link_libraries(
           onednn
           warpctc
           # change nccl to ${FLAGCX_LIB} if compiling with FlagCX ${FLAGCX_LIB}
-)
+          cupti)
 
 if(TARGET phi_core)
   target_link_libraries(${TARGET_NAME} PRIVATE phi_core)
