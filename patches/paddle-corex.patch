@@ -169,6 +169,29 @@ index 70b6c6263b..69a29df0f6 100644
  #endif
  
  #ifdef PADDLE_WITH_IPU
+diff --git a/paddle/phi/backends/c_nvtx_lib.h b/paddle/phi/backends/c_nvtx_lib.h
+new file mode 100644
+index 0000000000..516f32cf8d
+--- /dev/null
++++ b/paddle/phi/backends/c_nvtx_lib.h
+@@ -0,0 +1,17 @@
++// Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
++#pragma once
++
++#include <cstdint>
++
++namespace phi {
++namespace nvtx {
++enum class NvtxRangeColor : uint32_t {
++  Black = 0x00000000,
++  Red = 0x00ff0000,
++  Green = 0x0000ff00,
++  Blue = 0x000000ff,
++  White = 0x00ffffff,
++  Yellow = 0x00ffff00,
++};
++}  // namespace nvtx
++}  // namespace phi
 diff --git a/paddle/phi/backends/custom/custom_device.cc b/paddle/phi/backends/custom/custom_device.cc
 index 00b0439712..f5f7870044 100644
 --- a/paddle/phi/backends/custom/custom_device.cc
