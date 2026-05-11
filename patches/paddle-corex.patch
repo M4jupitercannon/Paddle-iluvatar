@@ -71,18 +71,18 @@ diff --git a/cmake/external/warpctc.cmake b/cmake/external/warpctc.cmake
 index 17ef70b4a0..e70bd507b3 100644
 --- a/cmake/external/warpctc.cmake
 +++ b/cmake/external/warpctc.cmake
-@@ -56,6 +56,11 @@ if(WITH_ROCM)
-       -p1 < ${PADDLE_SOURCE_DIR}/patches/warpctc/hip.cmake.patch)
+@@ -62,7 +62,11 @@ if(WITH_ROCM)
+         patch -p1 < ${PADDLE_SOURCE_DIR}/patches/warpctc/hip.cmake.patch)
+   endif()
  endif()
  
-+
 +set(WARPCTC_ILUVATAR_PATCH
 +    "${CUSTOM_DEVICE_SOURCE_DIR}/patches/warpctc-corex.patch")
 +message(STATUS "warpctc: Iluvatar patch at PATCH step: ${WARPCTC_ILUVATAR_PATCH}")
 +
- set(WARPCTC_INCLUDE_DIR
-     "${WARPCTC_INSTALL_DIR}/include"
-     CACHE PATH "Warp-ctc Directory" FORCE)
+ set(WARPCTC_ROCM_CMAKE_ARGS "")
+ if(WITH_ROCM)
+   list(APPEND WARPCTC_ROCM_CMAKE_ARGS -DROCM_PATH=${ROCM_PATH}
 @@ -121,6 +126,9 @@ ExternalProject_Add(
    COMMAND ${WARPCTC_PATCH_COMMAND}
    COMMAND ${WARPCTC_PATCH_CUDA_COMMAND}
@@ -93,13 +93,14 @@ index 17ef70b4a0..e70bd507b3 100644
    #BUILD_ALWAYS    1
    CMAKE_ARGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
               -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-@@ -131,9 +139,9 @@ ExternalProject_Add(
+@@ -131,10 +139,10 @@ ExternalProject_Add(
               -DCMAKE_CXX_FLAGS_RELEASE=${WARPCTC_CXX_FLAGS_RELEASE}
               -DCMAKE_CXX_FLAGS_DEBUG=${WARPCTC_CXX_FLAGS_DEBUG}
               -DCMAKE_INSTALL_PREFIX=${WARPCTC_INSTALL_DIR}
 -             -DWITH_GPU=${WITH_GPU}
 +             -DWITH_GPU=ON
               -DWITH_ROCM=${WITH_ROCM}
+              ${WARPCTC_ROCM_CMAKE_ARGS}
 -             -DWITH_OMP=${USE_OMP}
 +             -DWITH_OMP=OFF
               -DNVCC_FLAGS_EXTRA=${NVCC_FLAGS_EXTRA}
@@ -168,29 +169,6 @@ index 70b6c6263b..69a29df0f6 100644
  #endif
  
  #ifdef PADDLE_WITH_IPU
-diff --git a/paddle/phi/backends/c_nvtx_lib.h b/paddle/phi/backends/c_nvtx_lib.h
-new file mode 100644
-index 0000000000..516f32cf8d
---- /dev/null
-+++ b/paddle/phi/backends/c_nvtx_lib.h
-@@ -0,0 +1,17 @@
-+// Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
-+#pragma once
-+
-+#include <cstdint>
-+
-+namespace phi {
-+namespace nvtx {
-+enum class NvtxRangeColor : uint32_t {
-+  Black = 0x00000000,
-+  Red = 0x00ff0000,
-+  Green = 0x0000ff00,
-+  Blue = 0x000000ff,
-+  White = 0x00ffffff,
-+  Yellow = 0x00ffff00,
-+};
-+}  // namespace nvtx
-+}  // namespace phi
 diff --git a/paddle/phi/backends/custom/custom_device.cc b/paddle/phi/backends/custom/custom_device.cc
 index 00b0439712..f5f7870044 100644
 --- a/paddle/phi/backends/custom/custom_device.cc
@@ -653,7 +631,7 @@ index 024a7de73e..907ffd5f25 100644
 +++ b/paddle/phi/core/enforce.h
 @@ -97,7 +97,7 @@ inline bool is_error(bool stat) { return !stat; }
  
- void ThrowWarnInternal(const std::string& message);
+ PADDLE_API void ThrowWarnInternal(const std::string& message);
  
 -#if defined(__CUDA_ARCH__)
 +#if defined(__CUDA_ARCH__) && !defined(PADDLE_WITH_COREX)
@@ -1428,7 +1406,7 @@ index f64a8fbaf3..55b3a6d06d 100644
 -#endif
  
  template <typename T>
- using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+ using CudnnDataType = backends::gpu::CudnnDataType<T>;
 @@ -153,13 +149,8 @@ __global__ void FusedLayernormResidualDropoutBias(
  
    __shared__ U mean_share;
@@ -1523,19 +1501,6 @@ index 37b7cdfb1f..b6c010698e 100644
  
          // init intermediate storage
          DenseTensor block_data_tensor;
-diff --git a/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu b/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
-index db240283d6..8d6a23e2cd 100644
---- a/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
-+++ b/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
-@@ -171,7 +171,7 @@ void CrossEntropyWithSoftmaxGradGPUKernel(const GPUContext& dev_ctx,
-                                           DenseTensor* logits_grad) {
-   PADDLE_ENFORCE_EQ(
-       dev_ctx.GetPlace().GetType(),
--      AllocationType::GPU,
-+      AllocationType::CUSTOM,
-       common::errors::Unavailable("softmax_with_cross_entropy operator's "
-                                   "CUDA kernel only runs on GPU device."));
-   const T* loss_grad_data = loss_grad.data<T>();
 diff --git a/paddle/phi/kernels/gpu/elementwise_grad.h b/paddle/phi/kernels/gpu/elementwise_grad.h
 index 29fd53f88d..8fc8748ec3 100644
 --- a/paddle/phi/kernels/gpu/elementwise_grad.h
